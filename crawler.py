@@ -46,15 +46,21 @@ def normalize_url(url):
 
 
 def in_scope(url, root_host, include_subdomains=False):
-    host = (urlsplit(url).hostname or "").lower()
+    host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    root_host = root_host.lower().rstrip(".")
 
-    return (
-        host == root_host
-        or (
-            include_subdomains
-            and host.endswith("." + root_host)
-        )
+    # Treat www.example.com and example.com as equivalent.
+    host_base = host[4:] if host.startswith("www.") else host
+    root_base = (
+        root_host[4:]
+        if root_host.startswith("www.")
+        else root_host
     )
+
+    if host_base == root_base:
+        return True
+
+    return include_subdomains and host.endswith("." + root_base)
 
 
 def extract_anchor(tag):
@@ -255,13 +261,26 @@ async def crawl_website(
         # Discover sitemap URLs.
         discovered = {start_url}
 
+        sitemap_candidates = [
+            urljoin(start_url, "/sitemap.xml"),
+            urljoin(start_url, "/sitemap_index.xml"),
+            urljoin(start_url, "/sitemap-index.xml"),
+            urljoin(start_url, "/wp-sitemap.xml"),
+        ]
+
         if use_sitemap:
-            sitemaps = (
+            # Prefer sitemap locations declared in robots.txt,
+            # but also test common locations as fallbacks.
+            declared_sitemaps = (
                 robot_parser.site_maps()
                 if robot_parser else None
-            ) or [urljoin(start_url, "/sitemap.xml")]
+            ) or []
 
-            for sitemap in sitemaps:
+            sitemap_candidates = list(dict.fromkeys(
+                declared_sitemaps + sitemap_candidates
+            ))
+
+            for sitemap in sitemap_candidates:
                 discovered.update(
                     await discover_sitemap(
                         session, sitemap, root_host
@@ -411,7 +430,7 @@ async def crawl_website(
                             scheduled.add(target)
                             queue.append(target)
 
-            if progress_callback:
+            if progress_callback and batch:
                 progress_callback(
                     len(checked), max_urls, batch[-1]
                 )
